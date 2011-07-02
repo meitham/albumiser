@@ -48,8 +48,14 @@ import shutil
 import string
 import hashlib
 import logging, logging.handlers
+try:
+    import pyexiv2
+except ImportError:
+    print "Missing dependency: please install pyexiv2 in order to use this script"
 
 __version__ = "0.101"
+
+IMAGE_EXT = ['.jpg','jpeg','.png']
 
 class ImageException(Exception):
     pass
@@ -69,145 +75,142 @@ class MissingImageFile(ImageException):
 class DuplicateImage(ImageException):
     pass
 
+class NoThumbnailFound(ImageException):
+    pass
+
 def isPhoto(path):
     '''return true if image has a known image extension file
     '''
-    knownPhotoExt = [".jpg",".jpeg",".png"]
-    _, ext = os.path.splitext(path)
-    return string.lower(ext) in knownPhotoExt
+    try:
+        _, ext = os.path.splitext(path)
+        return string.lower(ext) in IMAGE_EXT 
+    except:
+        return False
 
-def isExact(file1, file2):
+def isExact(file1, file2, func=None):
     ''' checks if two files have exactly same content
     '''
-    hash1 = hashlib.sha256()
-    hash2 = hashlib.sha256()
-    hash1.update(open(file1).read())
-    hash2.update(open(file2).read())
-    return hash1.hexdigest() == hash2.hexdigest()
+    if func == None:
+        func = thumbDigest
+    try:
+        return func(file1) == func(file2) 
+    except NoThumbnailFound:
+        # resort to full file digest
+        func = sha256HexDigest
+    # lets try thumbnail 
+    return func(file1) == func(file2) 
 
-class ImageDate:
-    ''' a date and time class
+def sha256HexDigest(filename):
+    '''returns an sha256 hex digest of an input
     '''
-    def __init__(self, img_dt_tm=None):
-        ''' creates an instance using the given file img_dt_tm
-        '''
-        if img_dt_tm is None:
-            raise InvalidDateTag('No datetime stamp - None')
-        try:
-            if isinstance(img_dt_tm, str):
-                self.img_dt_tm = datetime.strptime(img_dt_tm, '%Y:%m:%d %H:%M:%S')
-                self.microsecond = 0
-        except ValueError:
-            raise InvalidDateTag('invalid date/time stamp %s accepted format is %s'%(img_dt_tm, '%Y:%m:%d %H:%M:%S'))
+    buf = open(filename).read()
+    h = hashlib.sha256()
+    h.update(buf)
+    return h.hexdigest()
 
-    def getPath(self, base, filename):
-        ''' returns a string that describes a path as a date such as
-        year/month/day/hour_minute_second_microsecond.
-        '''
-        _, fileExt = os.path.splitext(filename)
-        fileName = self.img_dt_tm.strftime('%Y_%m_%d-%H_%M_%S')
-        if self.microsecond:
-            fileName+='_%0.0f'%self.microsecond
-        fileName += fileExt.lower()
-        return os.path.join(base,
-                            str(self.img_dt_tm.year),
-                            str(self.img_dt_tm.month),
-                            str(self.img_dt_tm.day), fileName)
-
-    def __str__(self):
-        return str(self.img_dt_tm)+'_%0.0f'%self.microsecond
-        
-    def __repr__(self):
-        return str(self)
-
-    def incMicrosecond(self):
-        self.microsecond += 1
-
+def thumbDigest(filename):
+    '''returns a digest of the thumb image
+    '''
+    metadata = pyexiv2.ImageMetadata(filename)
+    metadata.read()
+    if not metadata.previews:
+        raise NoThumbnailFound(filename)
+    h = hashlib.sha256()
+    h.update(metadata.previews[-1].data)
+    return h.hexdigest()
+    
 class ImageFile:
-    ''' a file that contains valid image format
+    ''' an image file object handler 
     '''
     def __init__(self, fullfilepath):
-        ''' creates an instance of the ImageFile
+        ''' constructor 
         '''
-        global logger
+        global logger # use global logger / should really argument this
+        self.logger = logger
+
+        # file existance
         if not os.path.exists(fullfilepath): # file missing
             raise MissingImageFile('file not found %s' %fullfilepath)
-        try:
-            im = Image.open(fullfilepath)
-            self.srcfilepath = fullfilepath
-        except IOError, e:
-            raise InvalidImageFile('invalid image file %s' %fullfilepath)
-        if not hasattr(im, '_getexif'):
-            raise MissingDateTag('image file has no date %s' %fullfilepath)
-        else:
-            try:
-                exifdata = im._getexif()
-            except KeyError, e:
-                self.imagedate = None
-                logging.debug(e)
-                raise MissingDateTag('image file has no date %s' %fullfilepath)
-            logging.debug("type of object is %s" %type(exifdata))
-            if exifdata is None:
-                raise InvalidDateTag('exif date of type None')
-            try:
-                ctime = exifdata[0x9003]
-                self.imagedate = ImageDate(ctime)
-            except InvalidDateTag, e:
-                self.imagedate = None
-                logging.debug(e)
-            except KeyError, e:
-                self.imagedate = None
-                logging.debug(e)
 
-    def getFileName(self, base):
+        # file extension
+        self.basename, self.ext = os.path.splitext(fullfilepath)
+        self.ext = self.ext.lower() # i hate uppercased extensions
+        if not self.ext in IMAGE_EXT:
+            raise InvalidImageFile('invalid image file %s' %fullfilepath)
+        
+        self.metadata = pyexiv2.ImageMetadata(fullfilepath) 
+        try:
+            self.metadata.read()        
+        except IOError:
+            raise InvalidImageFile('invalid image file %s' %fullfilepath)
+            
+        if not self.metadata:
+            raise MissingImageFile('missing exif info %s' %fullfilepath)
+
+        self.srcfilepath = fullfilepath
+        try:
+            self.imagedate = self.metadata['Exif.Image.DateTime'].value
+        except KeyError:
+            self.logger.debug("Exif.Image.DateTime key is missing from exif")
+            # here we handle images that has no date, this will come later
+            raise InvalidDateTag('Exif.Image.DateTime key is missing from exif')
+        self.datedFileName = self.imagedate.strftime('%Y_%m_%d-%H_%M_%S')
+
+    def getUniquePath(self, base):
         ''' gets a proper name and path with no duplications
         '''
-        global logger
         if self.imagedate is None:
             # i should handle images with no date here
-            logger.info("no image date for file %s " %self.srcfilepath)
+            self.logger.info("no image date for file %s " %self.srcfilepath)
             # i could either return the file creation date
             # or just a string.
             return None
+        seq = 0
+        imd = self.imagedate 
+        self.dstdir = os.path.join(base, str(imd.year), str(imd.month), str(imd.day))
         while True:
-            self.dstfilename = self.imagedate.getPath(base, self.srcfilepath)
+            fileName = self.datedFileName
+            if seq:
+                fileName+='_%0.0f'%seq
+            fileName += self.ext
+            self.dstfilename = os.path.join(self.dstdir, fileName)
             if os.path.exists(self.dstfilename):
-                logger.info("image with similar date/time stamp already exists %s " %self.dstfilename)
+                self.logger.info("image with similar date/time stamp already exists %s " %self.dstfilename)
                 if isExact(self.srcfilepath, self.dstfilename):
-                    logger.info(".. this appars to be a duplicate %s " %self.dstfilename)
+                    self.logger.info(".. this appars to be a duplicate %s " %self.dstfilename)
                     raise DuplicateImage('image %s already exists - duplicate'%self.dstfilename)
                 else:
-                    logger.info(".. this is not a duplicate %s " %self.dstfilename)
-                    self.imagedate.incMicrosecond()
+                    self.logger.info(".. this is not a duplicate %s " %self.dstfilename)
+                    seq+=1
+                    continue
             else:
                 return self.dstfilename
 
     def move(self, base, deleteOriginal=False, link=False):
-        global logger
         try:
-            if self.getFileName(base) is None:
-                logger.info("unknown destination for image %s " %self.srcfilepath)
+            if self.getUniquePath(base) is None:
+                self.logger.info("unknown destination for image %s " %self.srcfilepath)
                 return
         except DuplicateImage, e:
-            logger.info(e)
+            self.logger.info(e)
             if deleteOriginal:
                 os.remove(self.srcfilepath)
             return 
         dstdir = os.path.dirname(self.dstfilename)
         if not (os.path.exists(dstdir) and os.path.isdir(dstdir)):
-            logger.info("creating dir %s" %dstdir)
+            self.logger.info("creating dir %s" %dstdir)
             os.makedirs(dstdir)
         if link:
-            logger.info("linking %s ==> %s " %(self.srcfilepath, self.dstfilename))
+            self.logger.info("linking %s ==> %s " %(self.srcfilepath, self.dstfilename))
             if os.path.islink(self.srcfilepath):
                 self.srcfilepath = os.readlink(self.srcfilepath)
             os.symlink(self.srcfilepath, self.dstfilename)
             return
         if deleteOriginal:
-            logger.info("moving %s ==> %s " %(self.srcfilepath, self.dstfilename))
+            self.logger.info("moving %s ==> %s " %(self.srcfilepath, self.dstfilename))
             shutil.move(self.srcfilepath, self.dstfilename)
         else:
-            logger.info("copying %s ==> %s " %(self.srcfilepath, self.dstfilename))
+            self.logger.info("copying %s ==> %s " %(self.srcfilepath, self.dstfilename))
             shutil.copy2(self.srcfilepath, self.dstfilename)
 
 def getOptions():
@@ -251,19 +254,10 @@ def getOptions():
                       help="copy/moves images with no EXIF data to [default: %default].")
     return parser
 
-class FilesTree:
-    def __init__(self):
-        pass
-
-    def __next__(self):
-        pass
-
-    def __iter__(self):
-        pass
-
 def treewalk(top, recursive=False, followlinks=False, depth=0):
     ''' generator similar to os.walk(), but with limited subdirectory depth
     '''
+    global logger
     if not maxdepth is None:
         if  depth > maxdepth:
             return
@@ -280,14 +274,15 @@ def treewalk(top, recursive=False, followlinks=False, depth=0):
             yield top, f
         else:
             # Unknown file type, print a message
-            logging.info('Skipping %s' % pathname)
+            logger.info('Skipping %s' % pathname)
 
-def makeLogger(log="sys.stderr"):
+def makeLogger(log=None):
     ''' returns a logger class, call first when used in shell, otherwise
     all objects complain of missing logger
     '''
     logger = logging.getLogger('')
-    if log == "sys.stderr":
+    if log == None:
+        # "sys.stderr"
         console = logging.StreamHandler()
         logger.addHandler(console)
     else:
@@ -300,7 +295,7 @@ if __name__=='__main__':
     '''
     parser = getOptions()
     (options, args) = parser.parse_args()
-
+    global logger
     logger = makeLogger(options.log)
     if len(args) == 1:
         src = dst = args[0]
@@ -309,7 +304,7 @@ if __name__=='__main__':
         src = args[0]
         dst = args[1]
     else:
-        logging.error("invalid number of arguments")
+        logger.error("invalid number of arguments")
         parser.print_help()
         sys.exit()
     if options.verbose:
@@ -326,8 +321,7 @@ if __name__=='__main__':
         options.move = False
     # check for non implemented options
     if options.rotate:
-        logger.debug("rotating images isn't imeplemented yet.")
-        sys.exit(0)
+        raise NotImplementedError('rotating images is not supported yet')
     maxdepth = options.depth = int(options.depth)
     logger.debug("depth is: "+ str(options.depth))
     if maxdepth == 0:

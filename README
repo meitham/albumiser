@@ -1,0 +1,38 @@
+Organise your photos.
+
+NAME
+    albumiser.py - flexable images organiser based on EXIF details.
+
+SYNOPSIS
+    [python] albumiser.py [OPTION]... [SOURCE] [DESTINATION]
+
+EXAMPLE
+    [python] albumiser.py -r -v
+
+DESCRIPTION
+    A flexiable python script that can operate on a tree of images and copy or
+    move the files into directories based on the image EXIF details. It can detect
+    duplicates using either MD5 or SHA, it can based the duplication on the entire
+    image or just the thumbnails. It has the ability to build or fix EXIF details
+    from images that has wrong EXIF details, such as it can correct picture taken
+    date on images.
+
+    The script can build a symlink of date based hierarchical directories. So you 
+    can have your images sorted in date based folders, a photo file that was taken 
+    at YYYY/MM/DD will end up in a folder of YYYY/MM/DD (posix) YYYY\MM\DD (win)
+
+Options:
+  --version             show program's version number and exit
+  -h, --help            show this help message and exit
+  -v, --verbose         make lots of noise [default]
+  -q, --quiet           unless errors don't output anything
+  -r, --recursive       operate recursively [default]
+  -s, --symlink         follow symbolic linked directories
+  -m, --move            delete original file from SOURCE
+  -d DEPTH, --depth=DEPTH
+                        unlimited [default: 0]
+  -g LOG, --log=LOG     log all actions [default: sys.stderr]
+  -i, --ignore          ignore photos with missing EXIF header [default]
+  -p NOEXIFPATH, --process-no-exif=NOEXIFPATH
+                        copy/moves images with no EXIF data to [default:
+                        undated]
