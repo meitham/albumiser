@@ -18,10 +18,10 @@ import sqlite3
 
 IMAGE_EXT = ['.jpg','jpeg','.png']
 
-def getOptions():
+def get_options():
     ''' creates the options and return a parser object
     '''
-    parser = OptionParser(usage="%prog [options] src dest", version="%prog 0.1")
+    parser = OptionParser(usage="%prog [options] src dest", version="%prog %s"%__version__)
     parser.add_option("-v", "--verbose",
                       action="store_true", dest="verbose",
                       default=True,
@@ -49,8 +49,8 @@ def getOptions():
                       default="0", type='int', dest="depth",
                       help="unlimited [default: %default].")
     parser.add_option("-g", "--log",
-                      default="sys.stderr", dest="log",
-                      help="log all actions [default: %default].")
+                      default=None, dest="log",
+                      help="log all actions, default is console.")
     # parser.add_option("-i", "--ignore",
                       # action="store_true", dest="ignore", default=True,
                       # help="ignore photos with missing EXIF header.")
@@ -59,7 +59,7 @@ def getOptions():
                       help="copy/moves images with no EXIF data to [default: %default].")
     return parser
 
-def makeLogger(log=None):
+def get_logger(log=None):
     ''' returns a logger class, call first when used in shell, otherwise
     all objects complain of missing logger
     '''
@@ -69,15 +69,15 @@ def makeLogger(log=None):
         console = logging.StreamHandler()
         logger.addHandler(console)
     else:
-        fileHandler = logging.FileHandler(log)
-        logger.addHandler(fileHandler)
+        file_handler = logging.FileHandler(log)
+        logger.addHandler(file_handler)
     return logger
 
 def treewalk(top, recursive=False, followlinks=False, depth=0):
     ''' generator similar to os.walk(), but with limited subdirectory depth
     '''
     global logger
-    if not maxdepth is None:
+    if maxdepth is not None:
         if  depth > maxdepth:
             return
     for f in os.listdir(top):
@@ -140,13 +140,14 @@ def sha256HexDigest(indata):
 #            shutil.copy2(self.srcfilepath, self.dstfilename)
 
     
+
 if __name__=='__main__':
     ''' main
     '''
-    parser = getOptions()
+    parser = get_options()
     (options, args) = parser.parse_args()
     global logger
-    logger = makeLogger(options.log)
+    logger = get_logger(options.log)
     if len(args) == 1:
         src = dst = args[0]
         # this needs to build the tree under temp and move it to dest when done
@@ -176,7 +177,8 @@ if __name__=='__main__':
     logger.debug("depth is: "+ str(options.depth))
     if maxdepth == 0:
         maxdepth = None
-    conn = sqlite3.connect('/tmp/albumise.db')
+    conn = sqlite3.connect('/tmp/albumise.sqlite')
+    conn.text_factory = str
     c = conn.cursor()
     c.execute('''
     create table images ( 
@@ -194,21 +196,27 @@ if __name__=='__main__':
     for dirpath, filename in treewalk(src, options.recursive, options.symlink, options.depth):
         undated = False
         try:
-            fullfilepath = os.path.join(dirpath, filename)
-            _,ext = os.path.splitext(fullfilepath)
+            path = os.path.join(dirpath, filename)
+            _,ext = os.path.splitext(path)
             ext = ext.lower()
-            logger.debug("processing %s" %fullfilepath)
-            if not isPhoto(fullfilepath): # ignore non image extensions
-                logger.debug("ignoring non image file %s" %fullfilepath)
+            logger.debug("processing %s" %path)
+            if not isPhoto(path): # ignore non image extensions
+                logger.warning("ignoring non image file %s" %path)
+                c.execute('''insert or ignore into images values(?,?,?,?,?)''',
+                (path, path, None, 'ignored', 'non image file'))
                 continue
-            metadata = pyexiv2.ImageMetadata(fullfilepath) 
+            try:
+                metadata = pyexiv2.ImageMetadata(path) 
+            except UnicodeDecodeError, e:
+                logger.warning('unable to handle unicode filenames %s' %path)
+                continue 
             try:
                 metadata.read()        
             except IOError, e:
-                logger.debug('invalid image file %s' %fullfilepath)
-                digest = sha256HexDigest(fullfilepath)
+                logger.error('invalid image file %s' %path)
+                digest = sha256HexDigest(path)
                 c.execute('''insert or ignore into images values(?,?,?,?,?)''',
-                (digest, fullfilepath, None, 'failed', str(e)))
+                (digest, path, None, 'failed', str(e)))
                 conn.commit()
                 continue
             # handle digest
@@ -217,37 +225,37 @@ if __name__=='__main__':
                 logger.debug("using thumbnail digest")
             except: 
                 # when metadata is not available use the entire file content hash
-                digest = sha256HexDigest(open(fullfilepath).read())
+                digest = sha256HexDigest(open(path).read())
                 logger.debug("using file content digest")
             # check if we have had this file before
             c.execute('''select * from images where hash=?''',(digest,))
             if len(c.fetchall())>0:
-                logger.debug("file already processed")
+                logger.warning("file already processed")
                 continue # we have this object already
             try:
                 imd = metadata['Exif.Image.DateTime'].value
             except KeyError:
-                logger.debug("Exif.Image.DateTime key is missing from exif")
+                logger.warning("Exif.Image.DateTime key is missing from exif")
                 try:
                     # to make my htc android happy
                     imd = metadata['Exif.Photo.DateTimeOriginal'].value
                 except KeyError:
-                    logger.debug("using epoch")
-                    undated = True
-                    undated_counter+=1
-                    imd = datetime(1970,1,1)
+                    logger.info("using epoch")
+            if imd is None or not isinstance(imd, datetime):
+                undated = True
+                undated_counter+=1
+                imd = datetime(1970,1,1)
+
             dstdir = os.path.join(dst, str(imd.year), str(imd.month), str(imd.day))
             if undated:
-                dstdir = os.path.join(dstdir, imd.strftime('%Y_%m_%d-%H_%M_%S-'), str(undated_counter), ext)
+                dstdir = os.path.join(dstdir, imd.strftime('%Y_%m_%d-%H_%M_%S-')+str(undated_counter)+ext)
             else:
-                dstdir = os.path.join(dstdir, imd.strftime('%Y_%m_%d-%H_%M_%S-'), ext)
-            c.execute('''insert or ignore into images values(?,?,?,?,?)''',
-            (digest, fullfilepath, dstdir, None, None))
+                dstdir = os.path.join(dstdir, imd.strftime('%Y_%m_%d-%H_%M_%S-')+ext)
+            c.execute('''insert or ignore into images values(?,?,?,?,?)''', (digest, path, dstdir, None, None))
             conn.commit
-            logger.debug('%s added to DB'%fullfilepath)
+            logger.info('%s added to DB'%path)
         except Exception, e:
-            import traceback
-            traceback.print_exc()
-            logger.debug(e)
+            logger.exception(e)
             continue
+    conn.commit
     c.close()

@@ -78,6 +78,83 @@ class DuplicateImage(ImageException):
 class NoThumbnailFound(ImageException):
     pass
 
+def getOptions():
+    ''' creates the options and return a parser object
+    '''
+    parser = OptionParser(usage="%prog [options] src dest", version="%prog 0.1")
+    parser.add_option("-v", "--verbose",
+                      action="store_true", dest="verbose",
+                      default=True,
+                      help="make lots of noise, mainly used for debugging")
+    parser.add_option("-q", "--quiet",
+                      action="store_false", dest="verbose",
+                      help="unless errors don't output anything.")
+    parser.add_option("-r", "--recursive",
+                      action="store_true", dest="recursive",
+                      help="operate recursively.")
+    parser.add_option("-R", "--rotate",
+                      action="store_true", dest="rotate",
+                      help="rotate images according to their EXIF rotation tag.")
+    parser.add_option("-k", "--dry-link",
+                      action="store_true", dest="link",
+                      help="creates a tree of symbolic links under destination with date time\
+                            hierarchy preserving the original images states.")
+    parser.add_option("-s", "--symlink",
+                      action="store_true", dest="symlink",
+                      help="follow symbolic linked directories.")
+    parser.add_option("-m", "--move",
+                      action="store_true", dest="move",
+                      help="delete original file from SOURCE, by default it makes a copy of the file.")
+    parser.add_option("-d", "--depth",
+                      default="0", type='int', dest="depth",
+                      help="unlimited [default: %default].")
+    parser.add_option("-g", "--log",
+                      default="sys.stderr", dest="log",
+                      help="log all actions [default: %default].")
+    # parser.add_option("-i", "--ignore",
+                      # action="store_true", dest="ignore", default=True,
+                      # help="ignore photos with missing EXIF header.")
+    parser.add_option("-p", "--process-no-exif",
+                      default="undated", dest="noExifPath",
+                      help="copy/moves images with no EXIF data to [default: %default].")
+    return parser
+
+def makeLogger(log=None):
+    ''' returns a logger class, call first when used in shell, otherwise
+    all objects complain of missing logger
+    '''
+    logger = logging.getLogger('')
+    if log == None:
+        # "sys.stderr"
+        console = logging.StreamHandler()
+        logger.addHandler(console)
+    else:
+        fileHandler = logging.FileHandler(log)
+        logger.addHandler(fileHandler)
+    return logger
+
+def treewalk(top, recursive=False, followlinks=False, depth=0):
+    ''' generator similar to os.walk(), but with limited subdirectory depth
+    '''
+    global logger
+    if not maxdepth is None:
+        if  depth > maxdepth:
+            return
+    for f in os.listdir(top):
+        file_path = os.path.join(top, f)
+        if os.path.isdir(file_path):
+            # its a dir recurse into it
+            if recursive:
+                islink = os.path.islink(file_path)
+                if (islink and followlinks) or not islink:
+                    for dirpath, filename in treewalk(file_path, recursive, followlinks, depth+1):
+                        yield dirpath, filename
+        elif os.path.isfile(file_path):
+            yield top, f
+        else:
+            # Unknown file type, print a message
+            logger.info('Skipping %s' % pathname)
+
 def isPhoto(path):
     '''return true if image has a known image extension file
     '''
@@ -87,18 +164,18 @@ def isPhoto(path):
     except:
         return False
 
-def isExact(file1, file2, func=None):
+def isDuplicate(file1, file2, func=None):
     ''' checks if two files have exactly same content
     '''
     if func == None:
         func = thumbDigest
     try:
+        # lets try thumbnail 
         return func(file1) == func(file2) 
     except NoThumbnailFound:
         # resort to full file digest
         func = sha256HexDigest
-    # lets try thumbnail 
-    return func(file1) == func(file2) 
+        return func(file1) == func(file2) 
 
 def sha256HexDigest(filename):
     '''returns an sha256 hex digest of an input
@@ -152,8 +229,12 @@ class ImageFile:
             self.imagedate = self.metadata['Exif.Image.DateTime'].value
         except KeyError:
             self.logger.debug("Exif.Image.DateTime key is missing from exif")
-            # here we handle images that has no date, this will come later
-            raise InvalidDateTag('Exif.Image.DateTime key is missing from exif')
+            try:
+                # to make my htc android happy
+                self.imagedate = self.metadata['Exif.Photo.DateTimeOriginal'].value
+            except KeyError:
+                # here we handle images that has no date, this will come later
+                raise InvalidDateTag('Exif.Photo.DateTimeOriginal key is missing from exif')
         self.datedFileName = self.imagedate.strftime('%Y_%m_%d-%H_%M_%S')
 
     def getUniquePath(self, base):
@@ -176,7 +257,7 @@ class ImageFile:
             self.dstfilename = os.path.join(self.dstdir, fileName)
             if os.path.exists(self.dstfilename):
                 self.logger.info("image with similar date/time stamp already exists %s " %self.dstfilename)
-                if isExact(self.srcfilepath, self.dstfilename):
+                if isDuplicate(self.srcfilepath, self.dstfilename):
                     self.logger.info(".. this appars to be a duplicate %s " %self.dstfilename)
                     raise DuplicateImage('image %s already exists - duplicate'%self.dstfilename)
                 else:
@@ -213,82 +294,6 @@ class ImageFile:
             self.logger.info("copying %s ==> %s " %(self.srcfilepath, self.dstfilename))
             shutil.copy2(self.srcfilepath, self.dstfilename)
 
-def getOptions():
-    ''' creates the options and return a parser object
-    '''
-    parser = OptionParser(usage="%prog [options] src dest", version="%prog 0.1")
-    parser.add_option("-v", "--verbose",
-                      action="store_true", dest="verbose",
-                      default=True,
-                      help="make lots of noise, mainly used for debugging")
-    parser.add_option("-q", "--quiet",
-                      action="store_false", dest="verbose",
-                      help="unless errors don't output anything.")
-    parser.add_option("-r", "--recursive",
-                      action="store_true", dest="recursive",
-                      help="operate recursively.")
-    parser.add_option("-R", "--rotate",
-                      action="store_true", dest="rotate",
-                      help="rotate images according to their EXIF rotation tag.")
-    parser.add_option("-k", "--dry-link",
-                      action="store_true", dest="link",
-                      help="creates a tree of symbolic links under destination with date time\
-                            hierarchy preserving the original images states.")
-    parser.add_option("-s", "--symlink",
-                      action="store_true", dest="symlink",
-                      help="follow symbolic linked directories.")
-    parser.add_option("-m", "--move",
-                      action="store_true", dest="move",
-                      help="delete original file from SOURCE, by default it makes a copy of the file.")
-    parser.add_option("-d", "--depth",
-                      default="0", type='int', dest="depth",
-                      help="unlimited [default: %default].")
-    parser.add_option("-g", "--log",
-                      default="sys.stderr", dest="log",
-                      help="log all actions [default: %default].")
-    # parser.add_option("-i", "--ignore",
-                      # action="store_true", dest="ignore", default=True,
-                      # help="ignore photos with missing EXIF header.")
-    parser.add_option("-p", "--process-no-exif",
-                      default="undated", dest="noExifPath",
-                      help="copy/moves images with no EXIF data to [default: %default].")
-    return parser
-
-def treewalk(top, recursive=False, followlinks=False, depth=0):
-    ''' generator similar to os.walk(), but with limited subdirectory depth
-    '''
-    global logger
-    if not maxdepth is None:
-        if  depth > maxdepth:
-            return
-    for f in os.listdir(top):
-        file_path = os.path.join(top, f)
-        if os.path.isdir(file_path):
-            # its a dir recurse into it
-            if recursive:
-                islink = os.path.islink(file_path)
-                if (islink and followlinks) or not islink:
-                    for dirpath, filename in treewalk(file_path, recursive, followlinks, depth+1):
-                        yield dirpath, filename
-        elif os.path.isfile(file_path):
-            yield top, f
-        else:
-            # Unknown file type, print a message
-            logger.info('Skipping %s' % pathname)
-
-def makeLogger(log=None):
-    ''' returns a logger class, call first when used in shell, otherwise
-    all objects complain of missing logger
-    '''
-    logger = logging.getLogger('')
-    if log == None:
-        # "sys.stderr"
-        console = logging.StreamHandler()
-        logger.addHandler(console)
-    else:
-        fileHandler = logging.FileHandler(log)
-        logger.addHandler(fileHandler)
-    return logger
     
 if __name__=='__main__':
     ''' main
@@ -335,6 +340,9 @@ if __name__=='__main__':
         try:
             imagefile = ImageFile(fullfilepath)
         except ImageException, e:
+            logger.debug(e)
+            continue
+        except Exception, e:
             logger.debug(e)
             continue
         imagefile.move(dst, options.move, options.link)
