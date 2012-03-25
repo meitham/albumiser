@@ -243,12 +243,21 @@ def main():
 
             # handle digest
             try:
+                # reading thumbnails
                 logger.debug('trying thumbnail digest')
-                digest = sha256HexDigest(metadata.previous[-1].data)
-            except: 
+                if len(metadata.previews) > 0:
+                    largest = metadata.previews[-1]
+                    data = largest.data
+                else: # no thumbnails available
+                    data = metadata.buffer
+            except Exception as e: 
                 # when metadata is not available use the entire file content hash
-                logger.debug('unable to read thumbnails - using file content digest')
-                digest = sha256HexDigest(open(path).read())
+                logger.exception(e)
+                logger.debug('unable to use metadata - using file content digest')
+                with open(path) as f:
+                    data = f.read()
+            finally:
+                digest = sha256HexDigest(data)
             # check if we have had this file before
             c.execute("""select * from images where hash=?""",(digest,))
             if len(c.fetchall())>0:
