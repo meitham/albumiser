@@ -1,6 +1,5 @@
 import argparse
 import hashlib
-import ipdb
 import logging, logging.handlers
 import os
 import shutil
@@ -26,14 +25,14 @@ def get_options():
     #parser = OptionParser(usage='sqlalbumiser.py [options] src dest', version='%s'%__version__)
     parser = argparse.ArgumentParser(prog='albumiser', 
                 version=__version__,
-                description='Organise your photos as you wish.',
+                description='Organise your photos the way they should be',
                 conflict_handler='resolve')
 
     # either be too verbose or quite, you cannot be both
     verbose = parser.add_mutually_exclusive_group()
     
     verbose.add_argument('-v', '--verbose', 
-            action='store_true', dest='verbose', default=True,
+            action='store_true', dest='verbose',
             help='make loads of noise, useful for debugging!')
 
     verbose.add_argument('-q', '--quiet',
@@ -67,22 +66,16 @@ def get_options():
 
     parser.add_argument('-d', '--depth',
                       type=int, dest='depth',
-                      help='unlimited [default: %default].')
+                      help='default is unlimited.')
     
     parser.add_argument('-g', '--log',
                       default=None, dest='log',
                       help='log all actions, default is console.')
-    parser.add_argument('source', action="store", nargs='?', default=os.getcwd()) 
-    parser.add_argument('target', action="store", nargs='?', default=os.getcwd()) 
+    parser.add_argument('source', action="store") #, nargs='?', default=os.getcwd()) 
+    parser.add_argument('target', action="store") #, nargs='?', default=os.getcwd()) 
     # photos with no EXIF dates will either be copied into a special directory 
     # or will assume a UNIX epoch 1970-01-01, latter is default
-    no_exif = parser.add_mutually_exclusive_group()
-    
-    no_exif.add_argument('--process-no-exif',
-                      default='undated', dest='process_no_exif',
-                      help='copy/moves images with no EXIF data to [default: %default].')
-    
-    no_exif.add_argument('--ignore-no-exif',
+    parser.add_argument('--ignore-no-exif',
                       action='store_true', dest='ignore_no_exif', default=False,
                       help='ignore photos with missing EXIF date, otherwise use UNIX epoch.')
     return parser
@@ -101,7 +94,6 @@ def get_logger(log=None):
 def handle_options():
     parser = get_options()
     ns = parser.parse_args()
-    #ipdb.set_trace()
     logger = get_logger(ns.log)
     if ns.source == ns.target:
         ns.target = tempfile.mkdtemp()
@@ -215,7 +207,6 @@ def main():
     logger = logging.getLogger('albumiser')
     logger.debug('about to walk files')
     tree_walker = TreeWalker(ns.source, ns.depth, logger=logger, follow_symlinks=ns.follow_links)
-    #ipdb.set_trace()
     for dirpath, filename in tree_walker.walk():
         undated = False
         try:
