@@ -190,18 +190,22 @@ def main():
     conn = sqlite3.connect('/tmp/albumise.sqlite')
     conn.text_factory = str
     c = conn.cursor()
-    c.execute("DROP TABLE IF EXISTS IMAGES")
+    c.execute("drop table if exists images")
+    #TODO add a new column for the year/month/day/hour/minute/second
     c.execute("""
-    CREATE TABLE IMAGES ( 
-        HASH TEXT UNIQUE,
-        PATH TEXT UNIQUE,
-        DESTINATION TEXT,
-        STATUS TEXT,
-        ERROR TEXT)
+    create table images ( 
+        hash text unique,
+        path text unique,
+        created text,
+        destination text,
+        status text,
+        error text)
     """)
-    c.execute("""create index idx1 on images(hash)""")
-    c.execute("""create index idx2 on images(path)""")
-    c.execute("""create index idx3 on images(status)""")
+    #TODO add a new index for the new column
+    c.execute("create index idx_hash on images(hash)")
+    c.execute("create index idx_path on images(path)")
+    c.execute("create index idx_status on images(status)")
+    c.execute("create index idx_created on images(created)")
     conn.commit()
     undated_counter = 0
     logger = logging.getLogger('albumiser')
@@ -209,16 +213,18 @@ def main():
     tree_walker = TreeWalker(ns.source, ns.depth, logger=logger, follow_symlinks=ns.follow_links)
     for dirpath, filename in tree_walker.walk():
         undated = False
+        imd = None
         try:
             path = os.path.join(dirpath, filename)
             _,ext = os.path.splitext(path)
             ext = ext.lower()
             logger.debug('processing %s' %path)
+
             if not isPhoto(path): 
                 # ignore non image extensions
                 logger.warning('ignoring non image file %s' %path)
-                c.execute("""insert or ignore into images values(?,?,?,?,?)""",
-                                (path, path, None, 'IGNORE', 'non image file'))
+                c.execute("insert or ignore into images values(?,?,?,?,?,?)",
+                                (path, path, None, None, 'IGNORE', 'non image file'))
                 continue
 
             try:
@@ -228,8 +234,8 @@ def main():
                 logger.error('unable to read image metadata %s' %path)
                 # use file digest
                 digest = sha256HexDigest(path)
-                c.execute("""insert or ignore into images values(?,?,?,?,?)""",
-                        (digest, path, None, 'FAILED', str(e)))
+                c.execute("insert or ignore into images values(?,?,?,?,?,?)",
+                        (digest, path, None, None, 'FAILED', str(e)))
                 conn.commit()
                 continue
 
@@ -250,43 +256,72 @@ def main():
                     data = f.read()
             finally:
                 digest = sha256HexDigest(data)
+
             # check if we have had this file before
             c.execute("""select * from images where hash=?""",(digest,))
             if len(c.fetchall())>0:
                 logger.warning('file %s already processed'%path)
                 if ns.delete_duplicates:
                     logger.debug('deleting duplicate file %s'%path)
-                    c.execute("""insert or ignore into images values(?,?,?,?,?)""",
-                        (digest, path, None, 'DUPLICATE', None))
+                    c.execute("insert or ignore into images values(?,?,?,?,?,?)",
+                                (digest, path, None, None, 'DUPLICATE', None))
                     os.remove(path)
                 continue # we have this object already
 
+            #import pdb
+            #if filename == '2012_04_09-15_15_18.2.jpg':
+            #    pdb.set_trace()
+
+            # fix images fucked up by fspot
             try:
-                imd = metadata['Exif.Image.DateTime'].value
+                software = metadata['Exif.Image.Software'].value
+                if software.startswith('f-spot'):
+                    # avoid using creation date time and rely on
+                    # date time digitized tag
+                    imd = metadata['Exif.Photo.DateTimeDigitized'].value
             except KeyError:
-                logger.warning('Exif.Image.DateTime key is missing from exif')
-                try:
-                    # to make my htc android happy
-                    imd = metadata['Exif.Photo.DateTimeOriginal'].value
-                except KeyError:
-                    logger.warning('Exif.Photo.DateTimeOriginal key is missing from exif using UNIX epoch')
+                logger.info('unknown software')
+
+            if imd is None:
+                tag = metadata.get('Exif.Image.DateTime', None)
+                if tag is None:
+                    tag = metadata.get('Exif.Photo.DateTimeOriginal', None)
+                if tag is not None:
+                    imd = tag.value
+
             if imd is None or not isinstance(imd, datetime):
+                logger.warning('Exif Date Tags are missing - using UNIX epoch')
                 undated = True
                 undated_counter+=1
                 imd = datetime(1970,1,1)
+
             yyyy = str(imd.year)
             mm = str(imd.month)
             dd = str(imd.day)
 
-            dstdir = os.path.join(ns.target, yyyy, '%04d-%02d'%(imd.year,imd.month),
-                    '%04d-%02d-%02d'%(imd.year,imd.month,imd.day))
+            dstdir = os.path.join(ns.target, 
+                                yyyy, 
+                                '%04d-%02d'%(imd.year,imd.month),
+                                '%04d-%02d-%02d'%(imd.year,imd.month,imd.day))
             if undated:
                 dstdir = os.path.join(dstdir, imd.strftime('%Y_%m_%d-%H_%M_%S-')
                         +str(undated_counter)+ext)
             else:
-                dstdir = os.path.join(dstdir, imd.strftime('%Y_%m_%d-%H_%M_%S')+ext)
-            c.execute("""insert or ignore into images values(?,?,?,?,?)""", 
-                    (digest, path, dstdir, 'READY', None))
+                c.execute("select * from images where created=?",(str(imd),))
+                images_in_second = len(c.fetchall())
+                if images_in_second > 0:
+                    # we have more than one image in this second
+                    dstdir = os.path.join(dstdir, 
+                                imd.strftime('%Y_%m_%d-%H_%M_%S')
+                                +'.'+str(images_in_second)+ext)
+                else: 
+                    dstdir = os.path.join(dstdir, 
+                                imd.strftime('%Y_%m_%d-%H_%M_%S')+ext)
+                # check here if the dated image already exists in the database
+                # select * from images where path like dstdir
+                # use the count of the query result
+            c.execute("insert or ignore into images values(?,?,?,?,?,?)", 
+                        (digest, path, str(imd), dstdir, 'READY', None))
             conn.commit()
             logger.info('%s added to DB'%path)
         except Exception as e:
@@ -300,7 +335,7 @@ def main():
     c.execute("""select * from images where status='READY'""")
     for row in c:
         source = row[1]
-        target = row[2]
+        target = row[3]
         target_dir = os.path.dirname(target)
         if not os.path.exists(target_dir):
             os.makedirs(target_dir)
