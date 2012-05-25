@@ -1,38 +1,36 @@
 Organise your photos.
+
 WORK IN __PROGRESS__
 
-NAME
-    albumiser.py - flexable images organiser based on EXIF details.
+albumiser [-h] [--version] [-v | -q] [-r] [--rotate] [--dry-link] [-s]
+                 [-m] [--delete-duplicates] [-d DEPTH] [-g LOG]
+                 [--ignore-no-exif]
+                 source target
 
-SYNOPSIS
-    [python] albumiser.py [OPTION]... [SOURCE] [DESTINATION]
+Organise your photos the way they should be
 
-EXAMPLE
-    [python] albumiser.py -r -v
+positional arguments:
+  source
+  target
 
-DESCRIPTION
-    A flexiable python script that can operate on a tree of images and copy or
-    move the files into directories based on the image EXIF details. It can detect
-    duplicates using either MD5 or SHA of either the entire image file just the 
-    thumbnail. It has the ability to build or fix EXIF details from images that 
-    has wrong EXIF details, such as it can correct picture taken date on images.
-
-    The script can build a symlink of date based hierarchical directories. So you 
-    can have your images sorted in date based folders, a photo file that was taken 
-    at YYYY/MM/DD will end up in a folder of YYYY/MM/DD (posix) YYYY\MM\DD (win)
-
-Options:
-  --version             show program's version number and exit
+optional arguments:
   -h, --help            show this help message and exit
-  -v, --verbose         make lots of noise [default]
-  -q, --quiet           unless errors don't output anything
-  -r, --recursive       operate recursively [default]
-  -s, --symlink         follow symbolic linked directories
-  -m, --move            delete original file from SOURCE
-  -d DEPTH, --depth=DEPTH
-                        unlimited [default: 0]
-  -g LOG, --log=LOG     log all actions [default: sys.stderr]
-  -i, --ignore          ignore photos with missing EXIF header [default]
-  -p NOEXIFPATH, --process-no-exif=NOEXIFPATH
-                        copy/moves images with no EXIF data to [default:
-                        undated]
+  --version             show program's version number and exit
+  -v, --verbose         make loads of noise, useful for debugging!
+  -q, --quiet           unless errors don't output anything.
+  -r, --recursive       operate recursively.
+  --rotate              rotate images according to their EXIF rotation tag.
+  --dry-link            creates a tree of symbolic links under destination
+                        with date time hierarchy preserving the original
+                        images states.
+  -s, --follow_links    follow symbolic linked directories.
+  -m, --move            delete original file from SOURCE, by default it makes
+                        a copy of the file.
+  --delete-duplicates   delete duplicate files from SOURCE, by default it
+                        ignores them and keep them intact.
+  -d DEPTH, --depth DEPTH
+                        default is unlimited.
+  -g LOG, --log LOG     log all actions, default is console.
+  --ignore-no-exif      ignore photos with missing EXIF date, otherwise use
+                        UNIX epoch.
+
