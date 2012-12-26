@@ -1,4 +1,5 @@
 #!/opt/local/bin/python
+from __future__ import print_function
 """
 Usage: exivfind [-H] [-L] [-P] [-Olevel] [-D help|tree|search|stat|rates|opt|exec] [path...] [expression]
 
@@ -132,7 +133,28 @@ def tag_match(fpath, fname, *args, **kwargs):
 
 
 def act_print(fpath, fname, *args, **kwargs):
-    print(os.path.join(fpath, fname))
+    if 'null' in kwargs:
+        print(os.path.join(fpath, fname), end='\x00')
+    else:
+        print(os.path.join(fpath, fname))
+
+
+def act_print_tag(fpath, fname, *args, **kwargs):
+    verbosity = kwargs.get('verbosity', 0)
+    tag = kwargs['print_tag']
+    metadata = read_exiv(fpath, fname, verbosity)
+    try:
+        exiv_tag = exiv_tags[tag]
+    except KeyError:
+        exiv_tag = tag
+    if metadata is None:
+        return
+    try:
+        exiv_tag_value = metadata[exiv_tag].value
+        print(exiv_tag_value)
+    except KeyError:  # tag is not available
+        if verbosity > 2:
+            traceback.print_exc()
 
 
 def act_exec(fpath, fname, *args, **kwargs):
@@ -147,6 +169,8 @@ tests = {
         'name': name_match,
         'make': partial(tag_match, tag='make'),
         'imake': partial(tag_match, tag='make', case_sensitive=False),
+        'model': partial(tag_match, tag='model'),
+        'imodel': partial(tag_match, tag='model', case_sensitive=False),
 #        'rmake': rmake,
 #        'orientation': orientation,
         'software': partial(tag_match, tag='software'),
@@ -159,7 +183,9 @@ tests = {
 
 actions = {
         'print': act_print,
+        'print0': partial(act_print, null=True),
         'exec': act_exec,
+        'print_tag': act_print_tag,
 }
 
 
@@ -188,8 +214,12 @@ def parse_args():
     parser.add_argument('-name', dest='name', action=TestAction)
     parser.add_argument('-make', dest='make', action=TestAction)
     parser.add_argument('-imake', dest='imake', action=TestAction)
+    parser.add_argument('-model', dest='model', action=TestAction)
+    parser.add_argument('-imodel', dest='imodel', action=TestAction)
     parser.add_argument('-true', dest='true', action=TestAction, nargs=0)
     parser.add_argument('-print', dest='print', action=ActionAction, nargs=0)
+    parser.add_argument('-print0', dest='print0', action=ActionAction, nargs=0)
+    parser.add_argument('-print-tag', dest='print_tag', action=ActionAction)
     parser.add_argument('-exec', dest='exec', action=ActionAction, nargs='+')
     return parser.parse_args()
 
