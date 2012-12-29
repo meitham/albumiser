@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 import argparse
+import functools
 import hashlib
 import logging
 import os
@@ -7,6 +8,7 @@ import shutil
 import sqlite3
 import sys
 import tempfile
+import traceback
 
 from datetime import datetime
 
@@ -30,7 +32,8 @@ def get_options():
     # either be too verbose or quite, you cannot be both
     verbose = parser.add_mutually_exclusive_group()
     verbose.add_argument('-v', '--verbose',
-            action='store_true', dest='verbose',
+            action='count', dest='verbose',
+            default=2,  # 1 being debug, 2 info, 3 warning, etc ...
             help="make loads of noise, useful for debugging!")
     verbose.add_argument('-q', '--quiet',
             action='store_false', dest='verbose',
@@ -57,50 +60,38 @@ def get_options():
             help="delete duplicate files from SOURCE, by default it ignores "
                     "them and keep them intact.")
     parser.add_argument('-d', '--depth',
-            type=int, dest='depth',
+            dest='depth',
             help="default is unlimited.")
     parser.add_argument('-g', '--log',
             default=None, dest='log',
             help="log all actions, default is console.")
     parser.add_argument('--ignore-no-exif',
-                      action='store_true', dest='ignore_no_exif',
-                      default=False,
-                      help="ignore photos with missing EXIF date, otherwise "
-                              "use UNIX epoch.")
-    parser.add_argument('source', action="store") #, nargs='?', default=os.getcwd())
-    parser.add_argument('target', action="store") #, nargs='?', default=os.getcwd())
-    return parser
-
-
-def get_logger(log_file_path=None):
-    """Returns a logger object
-    """
-    logger = logging.getLogger('albumiser')
-    logger.setLevel(logging.WARNING)
-    if log_file_path:
-        hdlr = logging.FileHandler(log_file_path)
+            action='store_true', dest='ignore_no_exif',
+            default=False,
+            help="ignore photos with missing EXIF date, otherwise use epoch.")
+    parser.add_argument('source', action="store")
+    parser.add_argument('target', action="store")
+    ns = parser.parse_args()
+    # handle options
+    logger = logging.getLogger('')
+    if ns.log:
+        hdlr = logging.FileHandler(ns.log)
         formatter = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
         hdlr.setFormatter(formatter)
         logger.addHandler(hdlr)
     else:
         logger.addHandler(logging.StreamHandler())
-    return logger
-
-
-def handle_options():
-    """Validates the options and set some defaults
-    """
-    parser = get_options()
-    ns = parser.parse_args()
-    logger = get_logger(ns.log)
-    if ns.source == ns.target:
-        ns.target = tempfile.mkdtemp()
-        ns.target_is_temp = True
     if ns.verbose:
-        logger.setLevel(logging.DEBUG)
+        # I wish Python used 0, 1, 2 rather than 0, 10, 20 for level numerics
+        level = ns.verbose * 10
+        logger.setLevel(level)
         logger.debug("verbose mode on")
     else:
         logger.debug("verbose mode off")
+    if ns.source == ns.target:
+        ns.target = tempfile.mkdtemp()
+        ns.target_is_temp = True
+        logger.info("using temp dir at %(target)s" % {'target': ns.target})
     if ns.follow_links:
         logger.debug("following symlinks")
     else:
@@ -111,63 +102,51 @@ def handle_options():
     # check for non implemented options
     if ns.rotate:
         raise NotImplementedError("rotating images is not supported yet")
-    if ns.depth is None:
-        max_depth = ns.depth = None
-    else:
-        max_depth = ns.depth = int(ns.depth)
-
-    logger.debug("depth is: %r"%ns.depth)
-    if max_depth == 0:
-        max_depth = None
-
+    if ns.depth is not None:
+        ns.depth = int(ns.depth)
+    logger.debug("depth is: %(depth)r" % {'depth': ns.depth})
     return ns
 
 
-class TreeWalker:
+class TreeWalker(object):
     """provides a functionality similar to os.walk but can do
     pre defined depth when needed.
     """
     def __init__(self, top='/', max_depth=None, *args, **kwargs):
         self._top = top
         self._max_depth = max_depth
-        self.logger = kwargs.get('logger', None)
-        self._depth = 0
-
-        if self._max_depth is None or self._max_depth>0:
-            self._recursive = True
-        else:
-            self._recursive = False
-
+        self.logger = kwargs.get('logger', logging.getLogger(''))
         self._follow_links = kwargs.get("follow_links", False)
+        self._depth = 0
+        self._recursive = self._max_depth is None or self._max_depth > 0
 
     def __repr__(self):
-        return "<TreeWalker top=%s, max_depth=%r>"%(self._top, self._max_depth)
+        return ("TreeWalker(top='%'top)s', max_depth='%(depth)r')" %
+                {'top': self._top, 'depth': self._max_depth})
 
     def walk(self, top=None, depth=0):
         if not top:
             top = self._top
-        if self._max_depth is not None:
-            if depth > self._max_depth:
-                return
+        if self._max_depth is not None and depth > self._max_depth:
+            return
         for f in os.listdir(top):
             file_path = os.path.join(top, f)
-            if os.path.isdir(file_path):
+            if os.path.isdir(file_path) and self._recursive:
                 # its a dir recurse into it
-                if self._recursive:
-                    islink = os.path.islink(file_path)
-                    if (islink and self._follow_links) or not islink:
-                        for dirpath, filename in self.walk(file_path, depth+1):
-                            yield dirpath, filename
+                is_link = os.path.islink(file_path)
+                if is_link and not self._follow_links:
+                    continue  # we won't follow links
+                for dir_path, file_name in self.walk(file_path, depth + 1):
+                    yield dir_path, file_name
             elif os.path.isfile(file_path):
                 yield top, f
             else:
                 # Unknown file type, print a message
-                if self.logger:
-                    self.logger.info('Skipping %s' % file_path)
+                self.logger.warning("Skipping %(path)s" % {'path': file_path})
 
 
-def isPhoto(path):
-    """return true if image has a known image extension file
+def is_image_file(path):
+    """Return true if image has a known image extension file
     """
     try:
         _, ext = os.path.splitext(path)
@@ -175,7 +154,7 @@ def isPhoto(path):
     except:
         return False
 
-def sha256HexDigest(indata):
+def sha_digest(indata):
     """returns an sha256 hex digest of an input
     """
     h = hashlib.sha256()
@@ -184,7 +163,7 @@ def sha256HexDigest(indata):
 
 
 def main():
-    ns = handle_options()
+    ns = get_options()
     conn = sqlite3.connect('/tmp/albumise.sqlite')
     conn.text_factory = str
     c = conn.cursor()
@@ -206,36 +185,35 @@ def main():
     c.execute("create index idx_created on images(created)")
     conn.commit()
     undated_counter = 0
-    logger = logging.getLogger('albumiser')
+    logger = logging.getLogger('')
     logger.debug("about to walk files")
-    tree_walker = TreeWalker(ns.source, ns.depth, logger=logger, follow_symlinks=ns.follow_links)
-    for dirpath, filename in tree_walker.walk():
+    tree_walker = TreeWalker(ns.source, ns.depth, logger=logger,
+            follow_symlinks=ns.follow_links)
+    for dir_path, file_name in tree_walker.walk():
         undated = False
         imd = None
         try:
-            path = os.path.join(dirpath, filename)
+            path = os.path.join(dir_path, file_name)
             _,ext = os.path.splitext(path)
             ext = ext.lower()
-            logger.debug("processing %s" %path)
-            if not isPhoto(path):
+            logger.debug("processing %(path)s" % locals())
+            if not is_image_file(path):
                 # ignore non image extensions
-                logger.warning("ignoring non image file %s" %path)
+                logger.warning("ignoring non image file %(path)s" % locals())
                 c.execute("insert or ignore into images values(?,?,?,?,?,?)",
-                                (path, path, None, None, "IGNORE", "non image file"))
+                        (path, path, None, None, "IGNORE", "non image file"))
                 continue
-
             try:
                 metadata = pyexiv2.ImageMetadata(path)
                 metadata.read()
             except(IOError, UnicodeDecodeError) as e:
-                logger.error("unable to read image metadata %s" %path)
+                logger.error("unable to get EXIF from %(path)s" % locals())
                 # use file digest
-                digest = sha256HexDigest(path)
+                digest = sha_digest(path)
                 c.execute("insert or ignore into images values(?,?,?,?,?,?)",
                         (digest, path, None, None, "FAILED", str(e)))
                 conn.commit()
                 continue
-
             # handle digest
             try:
                 # reading thumbnails
@@ -243,91 +221,87 @@ def main():
                 if len(metadata.previews) > 0:
                     largest = metadata.previews[-1]
                     data = largest.data
-                else: # no thumbnails available
+                else:  # no thumbnails available
                     data = metadata.buffer
             except Exception as e:
-                # when metadata is not available use the entire file content hash
+                # when metadata is not available use the file content hash
                 logger.exception(e)
-                logger.debug("unable to use metadata - using file content digest")
+                logger.debug("unable to use metadata - using file digest")
                 with open(path) as f:
                     data = f.read()
             finally:
-                digest = sha256HexDigest(data)
-
+                digest = sha_digest(data)
             # check if we have had this file before
             c.execute("""select * from images where hash=?""",(digest,))
             if len(c.fetchall())>0:
-                logger.warning("file %s already processed"%path)
-                if ns.delete_duplicates:
-                    logger.debug('deleting duplicate file %s'%path)
-                    c.execute("insert or ignore into images values(?,?,?,?,?,?)",
-                                (digest, path, None, None, "DUPLICATE", None))
-                    os.remove(path)
-                continue # we have this object already
-
-            #import pdb
-            #if filename == '2012_04_09-15_15_18.2.jpg':
-            #    pdb.set_trace()
-
-            # fix images fucked up by fspot
+                logger.warning("file %(path)s is a duplicate" % locals())
+                if not ns.delete_duplicates:
+                    continue
+                # delete duplicate file
+                logger.debug('deleting duplicate file %(path)s' % locals())
+                c.execute("insert or ignore into images values(?,?,?,?,?,?)",
+                            (digest, path, None, None, "DUPLICATE", None))
+                os.remove(path)
+                continue
+            # fix images fucked up by fspot/picasa, always favour original ones
             try:
-                software = metadata['Exif.Image.Software'].value
-                if software.startswith('f-spot'):
-                    # avoid using creation date time and rely on
-                    # date time digitized tag
-                    imd = metadata['Exif.Photo.DateTimeDigitized'].value
+                software = metadata['Exif.Image.Software'].value.lower()
             except KeyError:
-                logger.info("unknown software")
-
+                software = ''
+            if software and ('f-spot' in software or 'picasa' in software):
+                # avoid using creation date time and rely on digitized tag
+                # as these software messup with EXIF details
+                try:
+                    imd = metadata['Exif.Photo.DateTimeDigitized'].value
+                except KeyError:
+                    logger.warning("Digitized date unavailable for %(path)s." %
+                            locals())
             if imd is None:
-                tag = metadata.get('Exif.Image.DateTime', None)
+                tag = metadata.get('Exif.Photo.DateTimeOriginal', None)
                 if tag is None:
-                    tag = metadata.get('Exif.Photo.DateTimeOriginal', None)
+                    tag = metadata.get('Exif.Image.DateTime', None)
                 if tag is not None:
                     imd = tag.value
-
             if imd is None or not isinstance(imd, datetime):
                 logger.warning("Exif Date Tags are missing - using UNIX epoch")
                 undated = True
                 undated_counter+=1
                 imd = datetime(1970,1,1)
-
             yyyy = str(imd.year)
             mm = str(imd.month)
             dd = str(imd.day)
-
             dstdir = os.path.join(ns.target,
-                                yyyy,
-                                '%04d-%02d'%(imd.year,imd.month),
-                                '%04d-%02d-%02d'%(imd.year,imd.month,imd.day))
+                    yyyy,
+                    '%(y)04d-%(m)02d' % {'y': imd.year, 'm': imd.month},
+                    '%(y)04d-%(m)02d-%(d)02d' %
+                            {'y': imd.year, 'm': imd.month, 'd': imd.day})
+            # ospj is short for os.path.join where dstdir is already in
+            ospj = functools.partial(os.path.join, dstdir)
+            dtmf = '%Y_%m_%d-%H_%M_%S'
             if undated:
-                dstdir = os.path.join(dstdir, imd.strftime('%Y_%m_%d-%H_%M_%S-')
-                        +str(undated_counter)+ext)
-            else:
-                c.execute("select * from images where created=?",(str(imd),))
+                dstdir = ospj(''.join([imd.strftime(dtmf), '_',
+                        str(undated_counter), ext]))
+            else:  # dated
+                c.execute("select * from images where created=?", (str(imd),))
                 images_in_second = len(c.fetchall())
                 if images_in_second > 0:
                     # we have more than one image in this second
-                    dstdir = os.path.join(dstdir,
-                                imd.strftime('%Y_%m_%d-%H_%M_%S')
-                                +'.'+str(images_in_second)+ext)
+                    dstdir = ospj(''.join([imd.strftime(dtmf), '.',
+                            str(images_in_second), ext]))
                 else:
-                    dstdir = os.path.join(dstdir,
-                                imd.strftime('%Y_%m_%d-%H_%M_%S')+ext)
+                    dstdir = ospj(''.join([imd.strftime(dtmf), ext]))
+                # TODO
                 # check here if the dated image already exists in the database
                 # select * from images where path like dstdir
                 # use the count of the query result
             c.execute("insert or ignore into images values(?,?,?,?,?,?)",
                         (digest, path, str(imd), dstdir, "READY", None))
             conn.commit()
-            logger.info("%s added to DB"%path)
+            logger.info("%(path)s added to DB" % locals())
         except Exception as e:
-            logger.debug("ATTENTION: unexpected error")
-            logger.exception(e)
+            logger.exception(traceback.print_exc())
             continue
     conn.commit()
-    #c.close()
-
     # database is now built - process files
     c.execute("""select * from images where status='READY'""")
     for row in c:
