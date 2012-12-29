@@ -1,47 +1,14 @@
-#!/opt/local/bin/python
-from __future__ import print_function
+#!/usr/bin/env python
 """
-Usage: exivfind [-H] [-L] [-P] [-Olevel] [-D help|tree|search|stat|rates|opt|exec] [path...] [expression]
-
-
-default path is the current directory; default expression is -print
-expression may consist of: operators, options, tests, and actions:
-
-operators (decreasing precedence; -and is implicit where no others are given):
-      ( EXPR ) ! EXPR -not EXPR EXPR1 -a EXPR2 EXPR1 -and EXPR2
-      EXPR1 -o EXPR2 EXPR1 -or EXPR2 EXPR1 , EXPR2
-
-positional options (always true): -daystart -follow -regextype
-
-normal options (always true, specified before other expressions):
-      -depth --help -maxdepth LEVELS -mindepth LEVELS -mount -noleaf
-      --version -xdev -ignore_readdir_race -noignore_readdir_race
-
-tests (N can be +N or -N or N): -amin N -anewer FILE -atime N -cmin N
-      -cnewer FILE -ctime N -empty -false -fstype TYPE -gid N -group NAME
-      -ilname PATTERN -iname PATTERN -inum N -iwholename PATTERN -iregex PATTERN
-      -links N -lname PATTERN -mmin N -mtime N -name PATTERN -newer FILE
-      -nouser -nogroup -path PATTERN -perm [+-]MODE -regex PATTERN
-      -readable -writable -executable
-      -wholename PATTERN -size N[bcwkMG] -true -type [bcdpflsD] -uid N
-      -used N -user NAME -xtype [bcdpfls]
-
-actions: -delete -print0 -printf FORMAT -fprintf FILE FORMAT -print
-      -fprint0 FILE -fprint FILE -ls -fls FILE -prune -quit
-      -exec COMMAND ; -exec COMMAND {} + -ok COMMAND ;
-      -execdir COMMAND ; -execdir COMMAND {} + -okdir COMMAND ;
-
-
-find all the pictures taken by a canon camera that are RGB
+examples
+--------
 
 exivfind . -idevice-make Canon -idevice-model "canon eos d30" -color-space RGB
 
 exivfind . -make "HTC" -cdatime-between "2012-12-30"
-
-or you could combine long tags together such as
-
-or you could combine long tags together such as
 """
+from __future__ import print_function
+
 import argparse
 import fnmatch
 import os
@@ -57,6 +24,7 @@ except ImportError:
 
 import pyexiv2
 from functools32 import lru_cache
+
 
 exiv_tags = {
         'make': 'Exif.Image.Make',
@@ -104,7 +72,7 @@ class TreeWalker:
 def name_match(fpath, fname, *args, **kwargs):
     """Returns whether a filename matches a pattern or not
     """
-    pattern = kwargs['name']
+    pattern = kwargs['filter_value']
     return fnmatch.fnmatch(fname, pattern)
 
 
@@ -114,7 +82,7 @@ def tag_match(fpath, fname, *args, **kwargs):
     verbosity = kwargs.get('verbosity', 0)
     case_match = kwargs.get('case_sensitive', True)
     user_tag = kwargs['tag']
-    user_tag_value = kwargs['user_tag_value']
+    user_tag_value = kwargs['filter_value']
     exiv_tag = exiv_tags[user_tag]
     metadata = read_exiv(fpath, fname, verbosity)
     if metadata is None:
@@ -157,6 +125,15 @@ def act_print_tag(fpath, fname, *args, **kwargs):
             traceback.print_exc()
 
 
+def act_print_all_tags(fpath, fname, *args, **kwargs):
+    verbosity = kwargs.get('verbosity', 0)
+    metadata = read_exiv(fpath, fname, verbosity)
+    if not metadata:
+        return
+    for k in metadata.exif_keys:
+        print("%(k)s: %(v)s" % {'k': k, 'v': metadata[k].raw_value})
+
+
 def act_exec(fpath, fname, *args, **kwargs):
     path = os.path.join(fpath, fname)
     action = kwargs['exec']
@@ -186,6 +163,7 @@ actions = {
         'print0': partial(act_print, null=True),
         'exec': act_exec,
         'print_tag': act_print_tag,
+        'print_all_tags': act_print_all_tags,
 }
 
 
@@ -220,6 +198,8 @@ def parse_args():
     parser.add_argument('-print', dest='print', action=ActionAction, nargs=0)
     parser.add_argument('-print0', dest='print0', action=ActionAction, nargs=0)
     parser.add_argument('-print-tag', dest='print_tag', action=ActionAction)
+    parser.add_argument('-print-all-tags', dest='print_all_tags',
+            action=ActionAction, nargs=0)
     parser.add_argument('-exec', dest='exec', action=ActionAction, nargs='+')
     return parser.parse_args()
 
@@ -235,7 +215,7 @@ def evaluate(fpath, fname, args):
         #    continue  # not all provided options are filters
         filter_func = tests[filter_name]
         if not filter_func(fpath, fname, **{
-                'user_tag_value': values,
+                'filter_value': values,
                 'verbosity': args.verbose}):
             return False
     return True

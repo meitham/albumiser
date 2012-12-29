@@ -65,6 +65,10 @@ def get_options():
     parser.add_argument('-g', '--log',
             default=None, dest='log',
             help="log all actions, default is console.")
+    parser.add_argument('--ignore-thumbnails',
+            action='store_true', dest='ignore_thumbnails',
+            default=False,
+            help="Don't use thumbnails for image comparison, slower.")
     parser.add_argument('--ignore-no-exif',
             action='store_true', dest='ignore_no_exif',
             default=False,
@@ -87,7 +91,8 @@ def get_options():
         logger.setLevel(level)
         logger.debug("verbose mode on")
     else:
-        logger.debug("verbose mode off")
+        level = 50  # 50 being error/fatal
+        logger.setLevel(level)
     if ns.source == ns.target:
         ns.target = tempfile.mkdtemp()
         ns.target_is_temp = True
@@ -218,7 +223,7 @@ def main():
             try:
                 # reading thumbnails
                 logger.debug("trying thumbnail digest")
-                if len(metadata.previews) > 0:
+                if not ns.ignore_thumbnails and len(metadata.previews) > 0:
                     largest = metadata.previews[-1]
                     data = largest.data
                 else:  # no thumbnails available
@@ -243,25 +248,14 @@ def main():
                             (digest, path, None, None, "DUPLICATE", None))
                 os.remove(path)
                 continue
-            # fix images fucked up by fspot/picasa, always favour original ones
-            try:
-                software = metadata['Exif.Image.Software'].value.lower()
-            except KeyError:
-                software = ''
-            if software and ('f-spot' in software or 'picasa' in software):
-                # avoid using creation date time and rely on digitized tag
-                # as these software messup with EXIF details
-                try:
-                    imd = metadata['Exif.Photo.DateTimeDigitized'].value
-                except KeyError:
-                    logger.warning("Digitized date unavailable for %(path)s." %
-                            locals())
-            if imd is None:
-                tag = metadata.get('Exif.Photo.DateTimeOriginal', None)
-                if tag is None:
-                    tag = metadata.get('Exif.Image.DateTime', None)
-                if tag is not None:
-                    imd = tag.value
+            imd = None
+            tag = metadata.get('Exif.Photo.DateTimeOriginal', None)
+            if tag is None:
+                tag = metadata.get('Exif.Photo.DateTimeDigitized', None)
+            if tag is None:
+                tag = metadata.get('Exif.Image.DateTime', None)
+            if tag is not None:
+                imd = tag.value
             if imd is None or not isinstance(imd, datetime):
                 logger.warning("Exif Date Tags are missing - using UNIX epoch")
                 undated = True
