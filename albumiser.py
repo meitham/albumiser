@@ -9,6 +9,10 @@ import sqlite3
 import sys
 import tempfile
 import traceback
+try:
+    import ipdb as pdb
+except ImportError:
+    import pdb
 
 from datetime import datetime
 
@@ -87,7 +91,7 @@ def get_options():
         logger.addHandler(logging.StreamHandler())
     if ns.verbose:
         # I wish Python used 0, 1, 2 rather than 0, 10, 20 for level numerics
-        level = ns.verbose * 10
+        level = 60 - ns.verbose * 10
         logger.setLevel(level)
         logger.debug("verbose mode on")
     else:
@@ -158,6 +162,7 @@ def is_image_file(path):
         return ext.lower() in IMAGE_EXT
     except:
         return False
+
 
 def sha_digest(indata):
     """returns an sha256 hex digest of an input
